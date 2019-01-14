@@ -6,9 +6,9 @@ import (
     "log"
     "strings"
     "database/sql"
-    "strconv"
+    "flag"
     _ "github.com/mattn/go-sqlite3"
-    clipboard "github.com/atotto/clipboard"
+    "net"
 )
 
 const CREATE_DB_QUERY = "CREATE TABLE clips (clip_id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, clip_content TEXT UNIQUE, clip_insert_date NUMERIC, clip_source TEXT)"
@@ -18,9 +18,12 @@ const SEARCH_QUERY = "SELECT clip_content FROM clips WHERE clip_id = ? LIMIT 1"
 const MAX_VALUES = 5
 
 func main() {
+    fzfPath := flag.String("fzfpath", "fzf", "Optional path to your fzf binary")
+    flag.Parse()
+
     db := initDatabase()
 
-    fzf := exec.Command("fzf", "--delimiter=\t", "--nth=1", "--with-nth=2", "--no-sort", "--read0")
+    fzf := exec.Command(*fzfPath, "--delimiter=\t", "--nth=1", "--with-nth=2", "--no-sort", "--read0")
     stdin, err := fzf.StdinPipe()
     stdout, err := fzf.StdoutPipe()
 
@@ -55,26 +58,21 @@ func main() {
         log.Fatal(err)
     }
 
-    clip_id, err := strconv.ParseInt(strings.Split(string(buf), "\t")[0], 10, 64)
-    if err != nil {
-        log.Fatal(err)
-    }
+    clip_id := strings.Split(string(buf), "\t")[0]
 
     fzf.Wait()
 
-    stmt, err := db.Prepare(SEARCH_QUERY)
+    //TODO: clipboard subst
+    c, err := net.Dial("unix", os.Getenv("HOME") + "/.clitto.sock")
     if err != nil {
         log.Fatal(err)
     }
+    defer c.Close()
 
-    var clip_content string
-    row := stmt.QueryRow(clip_id)
-    err = row.Scan(&clip_content)
+    _, err = c.Write([]byte(clip_id))
     if err != nil {
         log.Fatal(err)
     }
-
-    clipboard.WriteAll(clip_content)
 }
 
 func initDatabase() *sql.DB {

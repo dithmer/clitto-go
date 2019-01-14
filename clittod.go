@@ -3,10 +3,12 @@ package main
 import (
     "time"
     "os"
+    "io"
     "strings"
     "strconv"
     "log"
     "database/sql"
+    "net"
     _ "github.com/mattn/go-sqlite3"
     clipboard "github.com/atotto/clipboard"
 )
@@ -14,6 +16,7 @@ import (
 const CREATE_DB_QUERY = "CREATE TABLE clips (clip_id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, clip_content TEXT UNIQUE, clip_insert_date NUMERIC, clip_source TEXT)"
 const PASTE_QUERY = "REPLACE INTO clips (clip_content, clip_insert_date, clip_source) VALUES (?, ?, ?)"// content, date, source
 const DELETE_OLD_QUERY = "DELETE FROM clips WHERE clip_id IN (SELECT clip_id FROM clips ORDER BY clip_insert_date DESC limit ?, ?)" // min, max
+const SEARCH_CONTENT_QUERY = "SELECT clip_content FROM clips WHERE clip_id = ? LIMIT 1" // min, max
 
 const MAX_VALUES = 5
 
@@ -68,6 +71,14 @@ func main() {
 
     db := initDatabase()
 
+    os.Remove(os.Getenv("HOME") + "/.clitto.sock")
+
+    l, err := net.Listen("unix", os.Getenv("HOME") + "/.clitto.sock")
+    if err != nil {
+        log.Fatal(err)
+    }
+    go listenForConnection(db, l)
+
     go cleanUp(db)
 
     for {
@@ -79,6 +90,49 @@ func main() {
         lastClipboardContent = clipboardContent
         storeClipboardContent(db, clipboardContent, "clipboard")
     }
+}
+
+func listenForConnection(db *sql.DB, l net.Listener) {
+    for {
+        fd, err := l.Accept()
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        go handleClittoSockConnection(db, fd)
+    }
+}
+
+func handleClittoSockConnection(db *sql.DB, c net.Conn) {
+    buf := make([]byte, 22)
+
+    for {
+        _, err := c.Read(buf)
+        if err != nil {
+            if err != io.EOF {
+                log.Fatal(err)
+            }
+            break
+        }
+    }
+
+    log.Println("Coming in: ", string(buf))
+    stmt, err := db.Prepare(SEARCH_CONTENT_QUERY)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    num, err := strconv.ParseInt(strings.Trim(string(buf), "\x00"), 10, 64)
+    if err != nil {
+        log.Fatal(err)
+    }
+    row := stmt.QueryRow(num)
+    var content string
+    err = row.Scan(&content)
+    if err != nil {
+        log.Println("Havent found something")
+    }
+    clipboard.WriteAll(content)
 }
 
 func cleanUp(db *sql.DB) string {
